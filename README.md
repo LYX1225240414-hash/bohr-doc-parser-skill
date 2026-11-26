@@ -1,2 +1,3 @@
-# bohr-doc-parser-skill
-Document parsing: structure extraction, fact extraction and source anchoring
+# p08 赛题作品
+
+玻尔科学空间高校挑战赛 · 北京化工大学分站赛。含 6 步工作流、自检清单、字段约定与基于真实论文 arXiv:2011.03269v1 的试跑产物。仅供赛事评审与学习交流。
