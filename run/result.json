@@ -1,0 +1,79 @@
+{
+  "case_id": "arXiv:2011.03269v1-parse-trial",
+  "status": "partial",
+  "result": {
+    "blocks": [
+      {
+        "type": "title",
+        "text": "Singlet color center in oxygen-deficient TiO2",
+        "anchor": "title"
+      },
+      {
+        "type": "paragraph",
+        "section": "Abstract",
+        "text": "We report an experimental and computational study...",
+        "anchor": "p1:2",
+        "facts": [
+          "色心具有单重态基态",
+          "与金红石/锐钛矿相氧空位相关"
+        ]
+      },
+      {
+        "type": "paragraph",
+        "section": "Abstract",
+        "text": "Electron paramagnetic resonance and optical spectroscopy...",
+        "anchor": "p1:3",
+        "facts": [
+          "使用EPR与光谱学表征",
+          "使用DFT确定结构"
+        ]
+      },
+      {
+        "type": "paragraph",
+        "section": "Results",
+        "text": "DFT calculations indicate that the singlet state originates from two electrons...",
+        "anchor": "p2:2",
+        "facts": [
+          "单重态源自两个相邻空位位电子"
+        ]
+      }
+    ],
+    "structure_summary": {
+      "detected_sections": [
+        "title",
+        "Abstract",
+        "Results",
+        "Discussion"
+      ],
+      "paragraphs": 6,
+      "figures": 0,
+      "tables": 0,
+      "equations": 0
+    }
+  },
+  "evidence_map": [
+    {
+      "claim": "解析出标题块",
+      "evidence": "Singlet color center in oxygen-deficient TiO2",
+      "anchor": "title"
+    },
+    {
+      "claim": "解析出方法与单重态事实",
+      "evidence": "DFT calculations indicate that the singlet state originates from two electrons",
+      "anchor": "p2:2"
+    }
+  ],
+  "verification": {
+    "fact_preservation": "通过：事实/数字/限定词/否定原样保留",
+    "anchor_validity": "通过：所有锚点指向输入中真实存在的段落",
+    "no_new_facts": "通过：未新增材料外信息"
+  },
+  "uncertainties": [
+    {
+      "item": "输入为文本化摘要，非原始PDF",
+      "reason": "无法演示真实PDF的版面/双栏/图表解析，正式评测会在真实PDF上运行",
+      "location": "全文"
+    }
+  ],
+  "change_log": []
+}
