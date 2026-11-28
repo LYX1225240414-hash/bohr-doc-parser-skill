@@ -31,8 +31,11 @@
 
 ## 第 6/7 步：带计数的证据与诚实性
 - [ ] `verification` 八项均有 `result` 与带计数/片段的 `evidence`
-- [ ] `text_completeness`：逐页提取块数 / 可见块数，漏行数写明
-- [ ] `anchor_spotcheck`：按锚点回查成功数 / 抽查数，附原文短引
+- [ ] `text_completeness`：`body_chars_in` / `body_chars_out`（分母**已剔除**页眉页脚，否则"正确剔除"会被算成"漏字"）
+- [ ] `header_footer_excluded`：`excluded_edge_blocks` 及其中 `running_heads`（跨页重复）与 `page_numbers`（页码形态）两类分别计数
+- [ ] `reading_order_correct`：有无坐标已区分；无坐标必须是 `na` 而不是伪造的 pass
+- [ ] `table_structure`：表数、单元格数、`header_rows` 是否回收成功
+- [ ] `anchor_spotcheck`：`quotes_located=命中数/总数`，短引是**真回查**（归一化后回到 anchor 所指页面做子串匹配），失败条目必须出现在 `uncertainties`
 - [ ] `uncertainty_disclosure`：已披露不可读/冲突项 / 发现的不可读/冲突项
 - [ ] `evidence_map` 每条有原文短引与真实锚点，`source_type` 不用"推断"
 - [ ] 缺口、冲突、权限不足写入 uncertainties；回修记入 `change_log`
