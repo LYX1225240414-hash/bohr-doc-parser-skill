@@ -1,0 +1,66 @@
+name: literature-pdf-parser
+version: 1.1.0
+entrypoint: ../SKILL.md
+bundle_root: ..
+description: >
+  科研 PDF 文献解析 Skill 的资源清单。执行内核为 resources/pdf_parser.py，
+  负责逐页提取正文/题注/脚注/表格/公式与章节结构、校正多栏阅读顺序、
+  排除页眉页脚，并为每段结论绑定页码与区块锚点，同时产出 ARM v1.1 复核产物。
+
+resources:
+  - path: resources/pdf_parser.py
+    kind: executable
+    runtime: python3
+    entry: "python3 resources/pdf_parser.py"
+    requires: []
+    requires_note: >
+      主路径优先使用平台预装的 pdf-text-tool / pdf-render-tool / ocr-tool；
+      本脚本承担"拿到文字层之后"的结构化与核验，纯标准库实现，不引入额外依赖。
+    inputs:
+      - "/input/case.json 指定的真实 PDF（不做预抽文字层假设）"
+      - "平台 pdf-text-tool 抽出的逐页文本（如可得）"
+    outputs:
+      - "/app/output/result.json"
+      - "/app/output/ARM v1.1 复核产物（清单见 resources/arm_contract.md）"
+    outputs_note: >
+      脚本内自带计数自检（页面覆盖、区块数、锚点可回查数、未解析页清单），
+      可直接作为 result.json 中 verification 的计数底稿。
+
+  - path: resources/arm_contract.md
+    kind: doc
+    purpose: ARM v1.1 产物清单、字段含义与缺失补齐规则（本题唯一按 ARM 产物评分的题）
+
+  - path: resources/parsing_playbook.md
+    kind: doc
+    purpose: 工具探测、栏序判据、页眉页脚识别、表格与公式还原规则、OCR 回退流程
+
+  - path: resources/checklist.md
+    kind: doc
+    purpose: 带计数的自检清单
+
+  - path: resources/field_dict.md
+    kind: doc
+    purpose: 字段字典、锚点格式与 verification 计数项
+
+  - path: resources/output_example.json
+    kind: sample
+    purpose: 输出结构示意（占位，非任何真实文献的解析结果）
+
+  - path: examples/README.md
+    kind: doc
+    purpose: 最小调用示例与从 PDF 到 ARM 产物的完整步骤
+
+platform_tools_used:
+  - name: pdf-text-tool
+    purpose: 抽取逐页文字层（首选）
+  - name: pdf-render-tool
+    purpose: 页面渲图，用于校验栏序与图表位置
+  - name: ocr-tool
+    purpose: 文字层缺失或扫描件时兜底；仍失败则该页标注不可解析并降级 partial
+
+runtime:
+  python: ">=3.9"
+  network: not_required
+  notes: >
+    只读输入 PDF，不改动输入目录；所有结构化结论带页码与区块锚点。
+    读不出的页/表/公式一律标注并计入 uncertainties，不猜内容。
