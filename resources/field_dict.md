@@ -32,11 +32,11 @@
 详见 `arm_contract.md`。`arm_manifest.json` 至少含 `arm_version`、`entrypoint`、`environment`、`execution.artifacts`、`expected_outputs`、`characterization`、`trace`；`characterization.json` 含真实 `tools` 版本与文档页数/文字层/bbox 能力；`trace/trace.jsonl` 每行含 `step_type`/`timestamp`/`action`/`detail`。
 
 ## verification 计数项
-- `text_completeness`：逐页提取块数 / 可见块数，漏行数单列
-- `reading_order_correct`：锚点抽查通过页数 / 抽查页数
-- `header_footer_excluded`：识别并排除块数 / 边缘重复块数
-- `table_structure`：单元格归属正确表格数 / 检查表格数
+- `text_completeness`：`body_chars_in` / `body_chars_out`（分母已剔除页眉页脚，避免"正确剔除"被算成"漏字"），漏行数单列
+- `reading_order_correct`：坐标可用的页数 / 总页数；无坐标必须为 `na`，不得伪造 pass
+- `header_footer_excluded`：排除块总数及拆分——`running_heads`（跨页重复）与 `page_numbers`（页码形态）
+- `table_structure`：表格数、单元格数、`header_rows`（表头是否从正文回收）
 - `formula_fidelity`：符号保真项 / 检查项
-- `anchor_spotcheck`：回查成功数 / 抽查数（附短引）
+- `anchor_spotcheck`：`quotes_located=命中数/总数`，短引须归一化后回到 anchor 所指页面做子串匹配；失败条目写入 `uncertainties`
 - `no_new_facts`：材料外新增事实数（必须为 0）
 - `uncertainty_disclosure`：已披露项 / 发现的不可读或冲突项
