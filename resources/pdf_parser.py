@@ -1091,9 +1091,16 @@ def main() -> int:
     }
 
     result = dict(skeleton)
+    if not blocks:
+        # 完全拿不到正文（缺文件/加密/无文字层且无 OCR）→ unable，不谎报 partial
+        overall = "unable"
+    elif uncertainties:
+        overall = "partial"
+    else:
+        overall = "success"
     result.update(
         {
-            "status": "success" if blocks and not uncertainties else "partial",
+            "status": overall,
             "main_result": main_result,
             "blocks": blocks,
             "section_tree": sections,
