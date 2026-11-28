@@ -111,7 +111,7 @@ python3 /skills/weekly-skill/resources/pdf_parser.py \
 失败项回到第 2–4 步修正并记入 `change_log`；仍无法解决则保留 `partial`，不得写成通过。
 
 ### 第 7 步：交付与复核
-写出 `/app/output/result.json` 与全部产物，按 `resources/arm_contract.md` 逐项确认：`case_id` 已回填、`output_contract` 字段齐全、`evidence_map` 每条有原文短引和真实锚点、`verification` 每项有计数、`uncertainties` 与 `change_log` 如实填写；ARM v1.1 七个产物齐全且指向本次真实运行。最终答复只做简要说明，详细证据留在产物中。
+写出 `/app/output/result.json` 与全部产物，按 `resources/arm_contract.md` 逐项确认：`case_id` 已回填、`output_contract` 字段齐全、`evidence_map` 每条有原文短引和真实锚点、`verification` 每项有计数、`uncertainties` 与 `change_log` 如实填写；ARM v1.1 七个产物齐全且指向本次真实运行；`arm_manifest.json` 的 `expected_outputs` / `execution.artifacts` 路径相对 `/app/output`，逐条 `test -e` 必须为真（不得写 `outputs/...`）。最终答复只做简要说明，详细证据留在产物中。
 
 ## 异常处理
 
