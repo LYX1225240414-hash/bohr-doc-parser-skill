@@ -1,5 +1,5 @@
 name: literature-pdf-parser
-version: 1.2.1
+version: 1.2.2
 entrypoint: ../SKILL.md
 bundle_root: ..
 description: >
