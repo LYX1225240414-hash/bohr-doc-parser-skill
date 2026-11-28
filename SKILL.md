@@ -65,7 +65,13 @@ python3 /skills/weekly-skill/resources/pdf_parser.py \
 脚本行为与边界：
 
 - 从 `/input/case.json` 递归发现真实材料路径，也会扫描 `/input` 下的 PDF/TXT/MD；**不按题目标签猜内容**。
-- 依次探测 PyMuPDF → pdfplumber → pdftotext → pypdf；有坐标时按「栏 → y → x」恢复阅读顺序，跨页重复边缘块标为 `header_footer`；无坐标时保留源顺序并在 `verification.reading_order_correct.result=na` 说明，不伪造 bbox。
+- 抽取链按序探测：PyMuPDF → pdfplumber →**平台预装 `pdf-text-tool`**（题面声明的工具，接口不固定时依次试 `<path>` / `--input <path>` / `extract <path>`，只认退出码 0 且确有文本的输出）→ `pdftotext -layout` → `pypdf`；每次失败都记进 `parse_log.txt`，不假装可用。
+- 有坐标时：按**块左边缘 x0 聚类**判栏（不是块中心——通栏标题的中心会制造假栏缝），再用「跨越栏缝的块数 ≤ max(2,15%)」否决单栏误判；栏内按 y 再按 x 排序；同一栏内行距 ≤1.25 倍行高且非「句末+大写起头」的折行**合并为一个段落块**。
+- 页眉页脚两条规则：跨页重复的 running head（归一化去数字后比对），以及**页码形态**（`12` / `- 12 -` / `iv` / `12/24` / `第 12 页`，靠位置+形态判定，因为页码逐页不同、无法靠重复识别）；命中的块标为 `header_footer` 且带 `edge_reason`。
+- 表格用 2+ 连续空格切列；表头行紧贴首行且只有一处对齐空白时会被误判成正文，脚本会把它**回收成表格第 0 行**并记 `header_rows`；回收失败时 `warnings` 明确写出，不静默。
+- 参考文献区按 `[n]` / `n.` 重切：续行并入所属条目，多条不粘连、一条不拆散，锚点写成 `p<页>:ref<序号>`。
+- 无坐标时保留源顺序，`verification.reading_order_correct.result=na`、`header_footer_excluded.result=na`，并在 `uncertainties` 写明"无坐标无法判栏序/剔页眉页脚"，不伪造 bbox。
+- 自检的 `anchor_spotcheck` 是**真回查**：把每条 `evidence_map.evidence` 的短引归一化后回到其 anchor 所指页面文本里做子串匹配，输出「命中数/总数」，失败的条目自动写入 `uncertainties`。
 - 自动识别标题/摘要/章节/题注/表格/公式/参考文献，生成 `blocks`、`section_tree`、`tables`、`formulas`、`reading_order`、`evidence_map`、`verification`、`uncertainties`、`sources`、`change_log`，并原样回填 `output_contract` 字段与 `case_id`。
 - 写出 `result.json`、`parsed_text.md`、`structure_map.md`、`evidence_map.md`、`parse_log.txt`，以及 ARM v1.1 的 `arm_manifest.json`、`README.md`、`src/reproduce.py`、`execution/run.log`、`execution/results/`、`characterization.json`、`trace/trace.jsonl`。
 - 脚本输出一行 JSON 摘要（`status` / `blocks` / `tables` / `uncertainties`）。若 `status: unable` 或 `blocks=0`，先检查 `parse_log.txt` 与 `sources`，再按异常处理决定 OCR 或如实报缺件。
