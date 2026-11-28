@@ -4,7 +4,7 @@
 
 | 产物 | 必须包含 | 生成方式 |
 |---|---|---|
-| `arm_manifest.json` | `arm_version=1.1`；`entrypoint=src/reproduce.py`；`environment.dependencies`；`execution.log_path=execution/run.log`；`execution.artifacts` 列出实际文件；`expected_outputs` 与 artifacts 对应；`characterization`、`trace` 路径 | 脚本自动写入；手工补齐时只列真实存在的文件 |
+| `arm_manifest.json` | `arm_version=1.1`；`entrypoint=src/reproduce.py`；`environment.dependencies=src/requirements.txt`；`execution.log_path=execution/run.log`；`execution.artifacts` 列出实际文件；`expected_outputs` 与 artifacts 一一对应，路径均相对 `/app/output`（如 `result.json`、`src/reproduce.py`、`execution/results/result.json`，**不要写成 `outputs/...`**）；`characterization`、`trace` 路径 | 脚本自动写入；手工补齐时只列真实存在的文件 |
 | `README.md` | 调用命令、依赖（可选 PyMuPDF/pdfplumber/pdftotext/pypdf）、输入输出路径、每个产物用途、限制与失败处理；明确声明不含预制答案 | 脚本自动写入，复核后可按实际情况补充 |
 | `src/reproduce.py` | 本次真实使用的解析脚本副本（即 `resources/pdf_parser.py`）；可独立重跑 | 脚本运行时复制自身 |
 | `execution/run.log` | 带时间戳的真实动作记录：读取 case、发现材料、探测工具、逐页提取、栏序、表格、公式、锚点、自检、产物写入、失败与回退 | 脚本 `RunLog` 自动写入 |
