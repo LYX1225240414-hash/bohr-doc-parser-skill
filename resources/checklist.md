@@ -2,7 +2,8 @@
 
 ## 第 0/1 步：输入与工具
 - [ ] 已读取 `/input/case.json` 与 `/input/task.md`，`case_id` 与 `output_contract` 已记录
-- [ ] 骨架 `result.json` 已早期落盘并增量更新（含 `status: partial` 保底）
+- [ ] 已优先运行 `resources/pdf_parser.py`；脚本先落 `status: partial` 骨架，再覆盖为真实解析结果
+- [ ] 脚本输出摘要中的 `blocks` / `tables` / `uncertainties` 已记录，异常已查 `parse_log.txt`
 - [ ] 已打开真实 PDF，`sources` 覆盖文件路径、页数与版本信息
 - [ ] 已探测并记录实际可用的解析工具与版本到 `parse_log.txt`，未假设包已安装
 - [ ] 规则表（语言、关注字段、版式方向、禁止改动、输出字段）已建立并每步重读
@@ -39,5 +40,7 @@
 ## 提交前检查
 - [ ] `result.json` 原样回填 `case_id` 与全部 `output_contract` 字段
 - [ ] `parsed_text.md` / `structure_map.md` / `evidence_map.md` / `parse_log.txt` 已写盘
+- [ ] ARM v1.1 七项产物齐全：`arm_manifest.json`、`README.md`、`src/reproduce.py`、`execution/run.log`、`execution/results/`、`characterization.json`、`trace/trace.jsonl`（见 `arm_contract.md`）
+- [ ] `src/reproduce.py` 与本次运行的 `resources/pdf_parser.py` 一致，run.log/trace.jsonl 是真实动作
 - [ ] 包内不含 `result.json`、正式案例答案或预制输出
 - [ ] 资源为 UTF-8 文本、相对路径、无符号链接，单文件 ≤500KB、总量 ≤2MB
