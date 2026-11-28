@@ -4,15 +4,18 @@
 
 ## 1. 工具探测（第 1 步）
 1. 读取 `/input/case.json` 与 `/input/task.md`，记录 `case_id`、`output_contract`、材料路径。
-2. 逐项探测并记录到 `parse_log.txt`：Python 解释器、`import fitz`（PyMuPDF）、`import pdfplumber`、`pdftotext -v`、`tesseract --version`、`ocrmypdf --version`。用实际命令的 stdout/stderr 记录可用版本；不可用就写 `unavailable`，不假装可用。
-3. 选择优先级：有文字层 → PyMuPDF/pdfplumber 坐标抽取；无文字层 → 图像预处理 + OCR；混合页逐页分别处理。
+2. 逐项探测并记录到 `parse_log.txt`：Python 解释器、`import fitz`（PyMuPDF）、`import pdfplumber`、平台预装的 `pdf-text-tool` / `pdf-render-tool` / `ocr-tool`、`pdftotext -v`、`pdfinfo -v`、`mutool -v`、`tesseract --version`。用实际命令的 stdout/stderr 记录可用版本；不可用就写 `unavailable`，不假装可用。
+3. 选择优先级：有文字层且有坐标 → PyMuPDF/pdfplumber；无坐标但平台有 `pdf-text-tool` → 纯文本 + `reading_order.result=na`（不伪造 bbox）；再退化到 `pdftotext -layout`、`pypdf`；无文字层 → 图像预处理 + OCR；混合页逐页分别处理。`pdf-text-tool` 的调用形态不固定，依次尝试 `<path>` / `--input <path>` / `extract <path>`，只认「退出码 0 且确有文本」的输出并记录实际生效的那个形态。
 4. 把实际调用的命令（含参数）逐条写入 `parse_log.txt`，便于复现。
 
 ## 2. 逐页坐标抽取（第 2 步）
 - 每页导出文本块：bbox (x0,y0,x1,y1)、文本、字号、字体名、块序号，存入 `/app/work/page_blocks.jsonl`。
-- 页眉页脚判据：同一 bbox 区域在 ≥2 页重复出现、位于页面上/下 12% 区域、内容相似（页码、期刊名、DOI 行）→ `header_footer`，不进正文但保留锚点。
-- 栏数判据：统计正文块 x 中心分布，若出现两个稳定峰且峰间空隙明显 → 双栏；三个及以上 → 多栏；跨栏标题的 bbox 跨越两峰 → 单独插到栏序之前。
-- 排序规则：先跨栏标题（按 y），再按栏（左→右或按实际版面），栏内按 y 再按 x；跨页续接块用文本首尾重合度判断并写 `cross_page_links`。
+- 页眉页脚判据（两条独立规则，任一命中即 `header_footer`，不进正文但保留锚点与 `edge_reason`）：
+  1. **跨页重复**：位于页面上/下 12% 区域，且归一化文本（去数字与符号后）在 ≥2 页重复（期刊名、DOI 行）。
+  2. **页码形态**：位于页面边缘且文本形如 `12` / `- 12 -` / `iv` / `12/24` / `第 12 页` —— 页码逐页不同，只能靠「位置 + 形态」判定，**不能靠重复**。
+- 栏数判据：对正文块**左边缘 x0** 做 1-D 聚类，取「栏缝两侧各 ≥30% 块」的最大间隙为栏缝，门槛 ≥ max(20pt, 页宽×3.5%)；再用「真正跨越栏缝的块（x1 越过右栏左边缘）≤ max(2, 15%)」做否决——单栏正文必然横跨全宽，会被这一条挡回去。**不要用块中心 x 聚类**：通栏标题的中心落在两栏之间，会制造假栏缝。
+- 排序规则：栏归属按块**左边缘**判定（跨栏标题归入起始栏，不会被算进右栏）；栏内按 y 再按 x；跨页续接块用文本首尾重合度判断并写 `cross_page_links`。
+- 段落合并：同一栏内、行距 ≤ 1.25 倍行高、且不是「句末标点 + 大写/CJK 起头」的行，视为同一段落的折行合并为一个块；字号不同的行（标题 vs 作者 vs 正文）不合并。断词连字符在合并时去掉。
 - 判断困难时保留两种候选顺序、附锚点进 uncertainties，不随意选一种写成事实。
 
 ## 3. 逐字保真（第 3 步）
@@ -22,15 +25,21 @@
 - 脚注与参考文献按编号单独成块，引用编号原样保留，不把脚注内容并入正文句子。
 
 ## 4. 表格还原（第 4 步）
-1. 先找表格线（pdfplumber lines/rects 或 PyMuPDF drawings）；无表格线时用文字 x/y 对齐聚类推断网格。
-2. 确定行列数、表头层级（多层表头逐层记录）、合并单元格范围（rowspan/colspan）。
-3. 每格写 `row`/`col`/`value` 与锚点；跨页续表填 `continued_from` 指向上一页表格锚点，表头只在首表出现但续表仍需引用。
-4. 图片型表格：若无法从文本层还原，保留 `table` 占位块与图号锚点，写 uncertainties 说明缺什么，不猜数值。
+1. 先找表格线（pdfplumber lines/rects 或 PyMuPDF drawings）；无表格线时用文字对齐推断网格：**同一行内 2 个及以上连续空格**即为列分隔。
+2. **表头行必须回到表内**：表头常只有一处对齐空白（如 `Sample      Retention(%)  Diffusion(cm2/s)`），易被当成正文。判定：紧贴表格首行、同页同栏、长度 ≤140、无句末标点、按 2+ 空格切出 2–10 段 → 判为表头行，行号 0，并记 `header_rows=1`。找不到表头时 `header_rows=0` 且 `warnings` 写明"首行数据被当作表头"，不静默。
+3. 确定行列数、表头层级（多层表头逐层记录）、合并单元格范围（rowspan/colspan）。
+4. 每格写 `row`/`col`/`value` 与锚点；跨页续表填 `continued_from` 指向上一页表格锚点，表头只在首表出现但续表仍需引用。
+5. 图片型表格：若无法从文本层还原，保留 `table` 占位块与图号锚点，写 uncertainties 说明缺什么，不猜数值。
 
 ## 5. 公式与特殊字符（第 3/4 步）
 - 优先保留原文 Unicode；能可靠转 LaTeX 时另存 `latex_or_unicode` 并在 `symbols_preserved` 记录。
 - 上下标、希腊字母、求和/积分限、矩阵括号逐项核对；不能确认的符号写入 `uncertain_symbols` 与 uncertainties。
 - 公式编号按原文记录到 `number` 与锚点，不重新编号。
+- 题注识别要防误判：正文常以 `Figure 2 shows ...` 起头。判定「题注」需标签后紧跟 `.`/`：`，或整段只有 1 个句末标点且不含 shows/indicates 等动词；否则按正文处理。
+
+## 5.5 参考文献（第 3 步）
+- 参考文献区以 `[n]` 或 `n.` 为条目标记，**续行并入所属条目**，不把一条拆成多块、也不把多条粘成一块；条目块 `type=reference`，锚点用 `p<页>:ref<序号>`。
+- 判定进入参考文献区：出现 `References` / `参考文献` / `Bibliography` 标题后，直到下一个同级标题为止。
 
 ## 6. 扫描件与 OCR 回退（第 5 步）
 - 判据：页面文字层字符数接近 0 且渲染页含显著非白像素 → 扫描页。
