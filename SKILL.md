@@ -128,6 +128,7 @@ python3 /skills/weekly-skill/resources/pdf_parser.py \
 - `resources/field_dict.md`：字段字典、锚点格式与 verification 计数项。
 - `resources/output_example.json`：输出结构示意（占位示例，非答案）。
 - `examples/README.md`：最小调用示例（示意）。
+- `environment/resources.yaml`：**资源入口**。声明脚本运行时、输入输出路径、平台预装工具用途（`pdf-text-tool` / `pdf-render-tool` / `ocr-tool`）与产物说明。
 
 ## 最小示例
 
