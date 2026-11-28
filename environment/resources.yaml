@@ -1,21 +1,24 @@
 name: literature-pdf-parser
-version: 1.1.0
+version: 1.2.0
 entrypoint: ../SKILL.md
 bundle_root: ..
 description: >
   科研 PDF 文献解析 Skill 的资源清单。执行内核为 resources/pdf_parser.py，
-  负责逐页提取正文/题注/脚注/表格/公式与章节结构、校正多栏阅读顺序、
-  排除页眉页脚，并为每段结论绑定页码与区块锚点，同时产出 ARM v1.1 复核产物。
+  负责逐页提取正文/题注/脚注/表格/公式与章节结构、按块左边缘聚类校正多栏阅读顺序、
+  合并段落折行、识别跨页 running head 与页码并排除、还原表头行与参考文献条目，
+  为每段结论绑定页码与区块锚点并做真实短引回查，同时产出 ARM v1.1 复核产物。
 
 resources:
   - path: resources/pdf_parser.py
     kind: executable
     runtime: python3
-    entry: "python3 resources/pdf_parser.py"
+    entry: "python3 resources/pdf_parser.py --case /input/case.json --out /app/output"
     requires: []
     requires_note: >
-      主路径优先使用平台预装的 pdf-text-tool / pdf-render-tool / ocr-tool；
-      本脚本承担"拿到文字层之后"的结构化与核验，纯标准库实现，不引入额外依赖。
+      抽取链按序探测：PyMuPDF → pdfplumber → 平台预装 pdf-text-tool（接口不固定，依次尝试
+      <path> / --input <path> / extract <path>，只认退出码 0 且确有文本的输出）→
+      pdftotext -layout → pypdf。全部不可用时如实返回 status=unable，不伪造解析结果；
+      结构化与核验部分为纯标准库实现，不引入额外依赖。
     inputs:
       - "/input/case.json 指定的真实 PDF（不做预抽文字层假设）"
       - "平台 pdf-text-tool 抽出的逐页文本（如可得）"
@@ -23,8 +26,9 @@ resources:
       - "/app/output/result.json"
       - "/app/output/ARM v1.1 复核产物（清单见 resources/arm_contract.md）"
     outputs_note: >
-      脚本内自带计数自检（页面覆盖、区块数、锚点可回查数、未解析页清单），
-      可直接作为 result.json 中 verification 的计数底稿。
+      脚本内自带计数自检（正文覆盖率、栏序判定、页眉页脚剔除数、表格表头回收、
+      锚点短引回查命中数、未解析页清单），可直接作为 result.json 中 verification 的计数底稿；
+      回查失败的短引会自动进入 uncertainties，不静默通过。
 
   - path: resources/arm_contract.md
     kind: doc
@@ -52,7 +56,7 @@ resources:
 
 platform_tools_used:
   - name: pdf-text-tool
-    purpose: 抽取逐页文字层（首选）
+    purpose: 抽取逐页文字层（镜像无 Python PDF 库时为主路径；脚本已内置该命令的容错调用）
   - name: pdf-render-tool
     purpose: 页面渲图，用于校验栏序与图表位置
   - name: ocr-tool
