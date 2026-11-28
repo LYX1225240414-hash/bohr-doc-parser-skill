@@ -1,5 +1,5 @@
 name: literature-pdf-parser
-version: 1.2.0
+version: 1.2.1
 entrypoint: ../SKILL.md
 bundle_root: ..
 description: >
@@ -68,3 +68,6 @@ runtime:
   notes: >
     只读输入 PDF，不改动输入目录；所有结构化结论带页码与区块锚点。
     读不出的页/表/公式一律标注并计入 uncertainties，不猜内容。
+
+changelog:
+  - "1.2.1: --out 兼容目录或文件名；抽取链与 ARM 产物不变。"
