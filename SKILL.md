@@ -1,6 +1,6 @@
 ---
 name: literature-pdf-parser
-description: "面向科研 PDF 文献解析的 Agent Skill：从真实 PDF 逐页提取正文、题注、脚注、表格、公式与章节结构，校正双栏/多栏阅读顺序并排除页眉页脚，为每段结论绑定页码与区块锚点，必要时执行 OCR 回退，输出带计数自检与不确定性说明的 result.json；当用户要求解析、结构化、翻译核对或逐字抽取科研文献时使用，支持中英文与扫描件。"
+description: "面向科研 PDF 文献解析的 Agent Skill：内置可离线运行的 resources/pdf_parser.py，从真实 PDF 逐页提取正文、题注、脚注、表格、公式与章节结构，校正双栏/多栏阅读顺序并排除页眉页脚，为每段结论绑定页码与区块锚点，输出带计数自检与不确定性说明的 result.json 及 ARM v1.1 全套复核产物；当用户要求解析、结构化、翻译核对或逐字抽取科研文献时使用，支持中英文与扫描件。"
 ---
 
 # 文献文档解析：提得全、排得对、拆得清、核得回
@@ -19,9 +19,11 @@ description: "面向科研 PDF 文献解析的 Agent Skill：从真实 PDF 逐�
 
 - 平台把本 Skill 安装到 `/skills/weekly-skill`，用固定的 3 个案例运行。先读真实输入 `/input/case.json` 与 `/input/task.md`；`case.json` 可能含 `case_id`、`output_contract`、PDF/材料路径、目标字段与约束。**以实际字段为准，不从题目标签、文件名或示例推断材料内容**。PDF 案例提供真实 PDF，没有预抽取答案层。
 - 中间文件（页面文本、坐标表、切图、OCR 临时文件）写在 `/app/work`，不污染输入目录；资源从 `/skills/weekly-skill/resources/` 读取，均为 UTF-8 文本。
+- **本包自带可执行解析工具 `resources/pdf_parser.py`（无需联网、无强制第三方依赖）。优先直接运行它拿到真实解析骨架与全部交付产物，再按下面的规则逐页复核与回修；不要在 900 秒预算内从零手写解析器。**
 - 最终结构化结果写到 `/app/output/result.json`（UTF-8 合法 JSON），**完整原样回填 `output_contract` 的全部字段与 `case_id`**，再补充本 Skill 的扩展字段；合同字段与本表同名时以合同为准。
 - 同时写出可读的 `/app/output/parsed_text.md`（按正确阅读顺序的正文与题注）、`/app/output/structure_map.md`（逐页区块坐标表）、`/app/output/evidence_map.md`（逐条锚点回查表）、`/app/output/parse_log.txt`（使用的工具命令、页数、栏数、OCR 与失败记录）。若 `output_contract` 指定其他产物路径，以合同为准；有可编辑中间产物时保留在 `/app/output`。
 - 预算内**尽早写入诚实的部分结果**再增量完善：64 次模型请求、900 秒、单次 16384 tokens；3 个案例由平台安排，参赛者不提供测试案例、白板或正式答案。
+- 交付时 `/app/output` 必须同时具备 ARM v1.1 复核产物：`arm_manifest.json`、`README.md`、`src/reproduce.py`、`execution/run.log`、`execution/results/`、`characterization.json`、`trace/trace.jsonl`；内置脚本会自动生成，缺失时按 `resources/arm_contract.md` 补齐。这些是**运行时由真实材料生成的产物**，不是提交包里的预制答案。
 - 让可核验操作轨迹覆盖逐页打开、坐标抽取、栏序判定、表格还原、公式核对、锚点抽查、回修等 **≥30 个真实动作**，不要只抛出一个最终结论；不得为凑数编造命令或日志。
 - 禁止提交预制答案、正式案例答案或假造的解析结果；本 Skill 包内不应含任何 `result.json`。
 - 资源限制：最多 50 个 UTF-8 文本文件、单文件 ≤500KB、总计 ≤2MB、无符号链接。
@@ -50,10 +52,30 @@ description: "面向科研 PDF 文献解析的 Agent Skill：从真实 PDF 逐�
 
 **锚点格式**：`p<页>:<段>`、`p<页>:<栏>:<段>`、`p<页>:tab<号>`、`p<页>:fig<号>`、`p<页>:eq<号>`、`p<页>:footnote<号>`、`p<页>:ref<号>`。必须指向真实 PDF 页面上的真实位置；无法定位的条目写入 uncertainties，不填伪造锚点。
 
+## 立即可用的解析工具（首选，不要从零写代码）
+
+在确认输入路径后**第一件事**运行内置脚本，让真实 PDF 先变成带锚点的结构化骨架和全套产物：
+
+```bash
+python3 /skills/weekly-skill/resources/pdf_parser.py \
+  --case /input/case.json \
+  --out /app/output
+```
+
+脚本行为与边界：
+
+- 从 `/input/case.json` 递归发现真实材料路径，也会扫描 `/input` 下的 PDF/TXT/MD；**不按题目标签猜内容**。
+- 依次探测 PyMuPDF → pdfplumber → pdftotext → pypdf；有坐标时按「栏 → y → x」恢复阅读顺序，跨页重复边缘块标为 `header_footer`；无坐标时保留源顺序并在 `verification.reading_order_correct.result=na` 说明，不伪造 bbox。
+- 自动识别标题/摘要/章节/题注/表格/公式/参考文献，生成 `blocks`、`section_tree`、`tables`、`formulas`、`reading_order`、`evidence_map`、`verification`、`uncertainties`、`sources`、`change_log`，并原样回填 `output_contract` 字段与 `case_id`。
+- 写出 `result.json`、`parsed_text.md`、`structure_map.md`、`evidence_map.md`、`parse_log.txt`，以及 ARM v1.1 的 `arm_manifest.json`、`README.md`、`src/reproduce.py`、`execution/run.log`、`execution/results/`、`characterization.json`、`trace/trace.jsonl`。
+- 脚本输出一行 JSON 摘要（`status` / `blocks` / `tables` / `uncertainties`）。若 `status: unable` 或 `blocks=0`，先检查 `parse_log.txt` 与 `sources`，再按异常处理决定 OCR 或如实报缺件。
+
+脚本只是**保底与提速**，不能代替逐页复核：运行后按下面的第 2–6 步打开真实材料，抽查题注、跨栏、合并单元格、公式符号和锚点短引，发现错误就直接编辑 `/app/output/result.json` 与对应 Markdown 产物，并把每处修改写进 `change_log`。不得把示例或脚本占位文本当成正式案例答案。
+
 ## 工作流
 
-### 第 0 步：落盘骨架（先保底）
-读 `/input/case.json` 与 `/input/task.md`，确认 `case_id`、`output_contract`、PDF 路径与任务边界；在 `/app/work` 建工作副本，立即向 `/app/output/result.json` 写入 `case_id`、`status: partial`、各必填字段空数组/空对象的骨架，后续逐段增量更新，避免超时只留下空结果。
+### 第 0 步：落盘骨架并先跑内置解析器（先保底）
+读 `/input/case.json` 与 `/input/task.md`，确认 `case_id`、`output_contract`、PDF 路径与任务边界；在 `/app/work` 建工作副本。立即运行上一节的 `resources/pdf_parser.py`：脚本先写 `status: partial` 骨架，再覆盖为真实解析结果，避免超时只留下空结果。若脚本因缺少输入无法运行，手工写骨架后继续。
 
 ### 第 1 步：确认输入边界与可用工具
 打开真实 PDF（或材料），记录页数、语言、是否有文字层、是否扫描件、是否加密、是否含矢量表格与图片型表格。按 `resources/parsing_playbook.md` 探测镜像中实际可用的解析库/命令（如 PyMuPDF、pdfplumber、pdftotext、tesseract），记录版本与命令到 `parse_log.txt`；**不要假设某个包已安装，也不要伪造工具输出**。缺文件 → `status: unable` 并写明具体路径；加密/无文字层按异常处理。
@@ -83,7 +105,7 @@ description: "面向科研 PDF 文献解析的 Agent Skill：从真实 PDF 逐�
 失败项回到第 2–4 步修正并记入 `change_log`；仍无法解决则保留 `partial`，不得写成通过。
 
 ### 第 7 步：交付与复核
-写出 `/app/output/result.json` 与全部产物，确认：`case_id` 已回填、`output_contract` 字段齐全、`evidence_map` 每条有原文短引和真实锚点、`verification` 每项有计数、`uncertainties` 与 `change_log` 如实填写；最终答复只做简要说明，详细证据留在产物中。
+写出 `/app/output/result.json` 与全部产物，按 `resources/arm_contract.md` 逐项确认：`case_id` 已回填、`output_contract` 字段齐全、`evidence_map` 每条有原文短引和真实锚点、`verification` 每项有计数、`uncertainties` 与 `change_log` 如实填写；ARM v1.1 七个产物齐全且指向本次真实运行。最终答复只做简要说明，详细证据留在产物中。
 
 ## 异常处理
 
@@ -99,6 +121,8 @@ description: "面向科研 PDF 文献解析的 Agent Skill：从真实 PDF 逐�
 
 ## 资源
 
+- `resources/pdf_parser.py`：**可离线运行的主解析脚本**，产出真实结构化结果与 ARM v1.1 全套产物（首选调用）。
+- `resources/arm_contract.md`：ARM v1.1 产物清单、字段含义与缺失补齐规则。
 - `resources/parsing_playbook.md`：工具探测、栏序判据、页眉页脚识别、表格与公式还原规则、OCR 回退流程。
 - `resources/checklist.md`：带计数的自检清单。
 - `resources/field_dict.md`：字段字典、锚点格式与 verification 计数项。
