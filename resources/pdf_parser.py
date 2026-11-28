@@ -23,9 +23,10 @@ import re
 import shutil
 import statistics
 import sys
+from collections import Counter
 from pathlib import Path
 
-SCRIPT_VERSION = "p08-pdf-parser-v3"
+SCRIPT_VERSION = "p08-pdf-parser-v3.1"
 TEXT_EXTS = {".pdf", ".txt", ".md", ".markdown", ".htm", ".html"}
 MAX_ANALYZED_PAGES = 60
 
@@ -129,10 +130,60 @@ def tool_inventory(log: RunLog) -> dict:
             tools[mod] = str(getattr(m, "__version__", "available"))
         except Exception:  # noqa: BLE001
             tools[mod] = "unavailable"
-    for cmd in ("pdftotext", "tesseract"):
+    # 平台预装的 PDF 工具优先探测：Harbor 镜像不一定有 Python PDF 库，但通常有这些命令
+    for cmd in ("pdf-text-tool", "pdf-render-tool", "ocr-tool", "pdftotext", "pdfinfo", "mutool", "tesseract"):
         tools[cmd] = shutil.which(cmd) or "unavailable"
     log.add("probe_tools", json.dumps(tools, ensure_ascii=False))
     return tools
+
+
+def _collect_strings(obj, out: list[str]) -> list[str]:
+    if isinstance(obj, str):
+        if obj.strip():
+            out.append(obj.strip())
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _collect_strings(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_strings(v, out)
+    return out
+
+
+def extract_with_pdf_text_tool(path: Path, exe: str, log: RunLog) -> list[str]:
+    """pdf-text-tool 的调用形态未在题面固定：依次尝试常见写法，只认「退出码 0 且确有文本」的输出"""
+    import subprocess
+
+    variants = [
+        [exe, str(path)],
+        [exe, "--input", str(path)],
+        [exe, "-i", str(path)],
+        [exe, "extract", str(path)],
+        [exe, "text", str(path)],
+    ]
+    for cmd in variants:
+        shown = " ".join(cmd[1:])
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=180)
+        except Exception as exc:  # noqa: BLE001
+            log.add("pdf_text_tool_failed", f"{path.name}: {shown} -> {type(exc).__name__}")
+            continue
+        if proc.returncode != 0:
+            log.add("pdf_text_tool_failed", f"{path.name}: {shown} exit={proc.returncode}")
+            continue
+        raw = proc.stdout.decode("utf-8", errors="replace")
+        if raw.lstrip()[:1] in "{[":
+            try:
+                raw = "\n".join(_collect_strings(json.loads(raw), []))
+            except Exception:  # noqa: BLE001
+                pass
+        if len(re.sub(r"\s", "", raw)) < 20:
+            log.add("pdf_text_tool_empty", f"{path.name}: {shown} exit=0 but no usable text")
+            continue
+        pages = raw.split("\f") if "\f" in raw else [raw]
+        log.add("extract_pdf", f"{path.name}: {len(pages)} pages via pdf-text-tool ({shown})")
+        return pages
+    return []
 
 
 def _block(text: str, page: int, bbox=None, font_size=None, font=None) -> dict:
@@ -209,6 +260,10 @@ def extract_pdf(path: Path, tools: dict, log: RunLog) -> tuple[list[dict], dict]
             log.add("pdfplumber_failed", f"{path.name}: {exc}")
     raw_pages: list[str] = []
     engine = ""
+    if not raw_pages and tools.get("pdf-text-tool") not in (None, "", "unavailable"):
+        raw_pages = extract_with_pdf_text_tool(path, tools["pdf-text-tool"], log)
+        if raw_pages:
+            engine = "pdf-text-tool"
     if tools.get("pdftotext") not in (None, "", "unavailable"):
         try:
             import subprocess
@@ -267,8 +322,41 @@ def norm_text(text: str) -> str:
     return re.sub(r"[\d\s\W_]+", "", text.lower())
 
 
-def mark_edge_repeats(pages: list[dict], log: RunLog) -> tuple[int, int]:
+PAGE_NUM = re.compile(
+    r"^(?:page\s*)?[-–—~\s]*("
+    r"\d{1,4}"
+    r"|[ivxlcdm]{1,7}"
+    r")\s*(?:/\s*\d{1,4})?[-–—~\s]*$"
+    r"|^第\s*\d{1,4}\s*页$"
+    r"|^\d{1,4}\s*/\s*\d{1,4}$",
+    re.I,
+)
+
+
+def looks_like_page_number(text: str) -> bool:
+    """页码/罗马数字页标：短、位于页边、内容随页变化，靠"位置+形态"判定而非重复"""
+    t = text.strip()
+    if not t or len(t) > 16:
+        return False
+    return bool(PAGE_NUM.match(t))
+
+
+def mark_edge_repeats(pages: list[dict], log: RunLog) -> tuple[int, int, int]:
     edge: dict[str, list[int]] = {}
+    page_nums = 0
+    for page in pages:
+        height = page.get("height") or 0
+        for blk in page["blocks"]:
+            bbox = blk.get("bbox")
+            if not bbox or len(bbox) != 4 or not height:
+                continue
+            if blk.get("kind") == "header_footer":
+                continue
+            y0, y1 = bbox[1], bbox[3]
+            if (y0 <= height * 0.12 or y1 >= height * 0.88) and looks_like_page_number(blk["text"]):
+                blk["kind"] = "header_footer"
+                blk["edge_reason"] = "page_number"
+                page_nums += 1
     for page in pages:
         height = page.get("height") or 0
         for blk in page["blocks"]:
@@ -287,51 +375,103 @@ def mark_edge_repeats(pages: list[dict], log: RunLog) -> tuple[int, int]:
             bbox = blk.get("bbox")
             if not bbox or len(bbox) != 4 or not height:
                 continue
+            if blk.get("kind") == "header_footer":
+                continue
             y0, y1 = bbox[1], bbox[3]
             if y0 <= height * 0.12 or y1 >= height * 0.88:
                 key = norm_text(blk["text"])[:60]
                 if len(set(edge.get(key, []))) >= 2:
                     blk["kind"] = "header_footer"
+                    blk["edge_reason"] = "repeated_running_head"
                     excluded += 1
-    log.add("detect_header_footer", f"excluded={excluded} repeated_edge_patterns={len(edge)}")
-    return excluded, len(edge)
+    total = excluded + page_nums
+    log.add(
+        "detect_header_footer",
+        f"excluded={total} repeated_running_heads={excluded} page_numbers={page_nums} "
+        f"repeated_edge_patterns={len(edge)}",
+    )
+    return total, len(edge), page_nums
 
 
 def detect_columns(page: dict, log: RunLog) -> tuple[int, list[list[float]]]:
+    """按块左边缘 x0 聚类判栏：同栏块的左边缘几乎重合；跨栏标题/通栏块的左边缘也落在本栏，不会制造假栏缝"""
+    if "_col_cache" in page:  # 同一页只判定一次，避免重复动作污染轨迹
+        return page["_col_cache"]
     blocks = [b for b in page["blocks"] if b.get("kind") != "header_footer" and b.get("bbox")]
     if len(blocks) < 6:
+        page["_col_cache"] = (1, [])
         return 1, []
-    centers = sorted(((b["bbox"][0] + b["bbox"][2]) / 2.0) for b in blocks)
-    if not centers:
+    width = float(page.get("width") or 0) or 600.0
+    x0s = sorted(b["bbox"][0] for b in blocks)
+    need = max(3, int(len(x0s) * 0.3))
+    min_gap = max(20.0, width * 0.035)
+    best: tuple[float, int] | None = None
+    for i in range(len(x0s) - 1):
+        left, right = i + 1, len(x0s) - i - 1
+        if min(left, right) < need:
+            continue
+        gap = x0s[i + 1] - x0s[i]
+        if gap < min_gap:
+            continue
+        if best is None or gap > best[0]:
+            best = (gap, i)
+    if best is None:
+        page["_col_cache"] = (1, [])
         return 1, []
-    gaps = [(centers[i + 1] - centers[i], i) for i in range(len(centers) - 1)]
-    gaps.sort(reverse=True)
-    if not gaps or gaps[0][0] < 40:
+    split = (x0s[best[1]] + x0s[best[1] + 1]) / 2.0
+    right_min = x0s[best[1] + 1]
+    if not (width * 0.2 <= split <= width * 0.8):
+        page["_col_cache"] = (1, [])
         return 1, []
-    median_span = statistics.median([c - centers[0] for c in centers[1:]] or [1])
-    if gaps[0][0] < max(40, median_span * 0.45):
+    # 真正跨越两栏的块（通栏标题、跨栏图）过多 → 不是分栏版式
+    crossing = sum(1 for b in blocks if b["bbox"][0] < split and b["bbox"][2] > right_min + 4)
+    if crossing > max(2, int(len(blocks) * 0.15)):
+        log.add("detect_columns", f"page={page['number']} columns=1 (rejected split {split:.1f}: {crossing} crossing blocks)")
+        page["_col_cache"] = (1, [])
         return 1, []
-    split = (centers[gaps[0][1]] + centers[gaps[0][1] + 1]) / 2.0
-    cols = [[0.0, split], [split, float(page.get("width") or centers[-1] + 10)]]
-    log.add("detect_columns", f"page={page['number']} columns=2 split_x={split:.1f}")
+    cols = [[0.0, split], [split, width]]
+    log.add(
+        "detect_columns",
+        f"page={page['number']} columns=2 split_x={split:.1f} gap={best[0]:.1f} crossing={crossing}",
+    )
+    page["_col_cache"] = (2, cols)
     return 2, cols
 
 
-def block_type(text: str, page_no: int, idx: int, font_size, in_refs: bool) -> str:
+def block_type(text: str, page_no: int, idx: int, font_size, in_refs: bool, body_size=None) -> str:
     t = text.strip()
     low = t.lower()
-    if re.match(r"^(figure|fig\.?|table|tab\.?|图|表)\s*\d+", low):
-        return "caption"
+    if re.match(r"^#{1,6}\s*\S", t):
+        return "heading"
+    label = re.match(r"^(?:figure|fig\.?|table|tab\.?|图|表)\s*\d+", low)
+    if label:
+        rest = low[label.end():]
+        label_delim = bool(re.match(r"\s*[.:：]", rest))
+        n_term = len(re.findall(r"[.!?。！？]", rest))
+        prose_verb = bool(
+            re.search(
+                r"\b(?:shows?|show|indicates?|reveals?|illustrates?|depicts?|demonstrates?|presents?|lists?|summari[sz]es?)\b",
+                rest[:120],
+            )
+        )
+        is_prose = (not label_delim and (prose_verb or n_term >= 2)) or len(t) > 320
+        if not is_prose:
+            return "caption"
     if re.match(r"^(references?|参考文献|acknowledg|致谢|appendix|附录)\b", low):
         return "heading"
     if in_refs and re.match(r"^(?:\[\d+\]|\d{1,3}[.)])\s", t):
         return "reference"
     if re.match(r"^(abstract|摘要)\b", low):
         return "heading"
-    if re.match(r"^(?:\d+(?:\.\d+){0,3}\.?\s+|[IVX]+\.\s+|第[一二三四五六七八九十]+[章节]\s*)", t) and len(t) < 160:
+    # 章节编号：1–2 位数字（可带小数点层级）+ 大写/CJK 起头的短标题；"500 cycles at 1C" 不算
+    if re.match(r"^(?:\d{1,2}(?:\.\d{1,2}){0,3}\.?\s+[A-Z\u4e00-\u9fff]|[IVX]{1,4}\.\s+[A-Z]|第[一二三四五六七八九十]+[章节]\s*)", t) and len(t) < 160:
         return "heading"
-    if page_no == 1 and idx < 6 and font_size and font_size >= 13 and len(t) < 180:
-        return "title"
+    if page_no == 1 and idx <= 4 and font_size and len(t) < 220:
+        base = float(body_size or 0)
+        if base and float(font_size) >= base * 1.22 and float(font_size) >= 9.5:
+            return "title"
+        if not base and float(font_size) >= 13:
+            return "title"
     if t.count("|") >= 2 or t.count("\t") >= 2 or re.search(r"\s{4,}\S+.*\s{4,}\S+", t):
         return "table"
     if re.search(r"[=≈≤≥∑∫αβγδθλμσπΔΩ][^\n]{0,80}$", t) and len(t) < 180:
@@ -339,6 +479,123 @@ def block_type(text: str, page_no: int, idx: int, font_size, in_refs: bool) -> s
     if re.match(r"^[*†‡]\s*\d", t) or re.match(r"^\d{1,2}\s+[A-Z][a-z]+.*,$", t):
         return "footnote"
     return "paragraph"
+
+
+SENT_END = re.compile(r"[.!?。！？：；:]$")
+ASCII_WORD_END = re.compile(r"[A-Za-z0-9)]$")
+
+
+def _join_lines(a: str, b: str) -> str:
+    """按中英边界拼接两行：行末连字符断词去连字符；纯 ASCII 词间补空格；中文不补空格"""
+    a, b = a.rstrip(), b.strip()
+    if not a:
+        return b
+    if not b:
+        return a
+    if a.endswith("-") and len(a) > 2 and a[-2].isalpha() and b[:1].islower():
+        return a[:-1] + b
+    if ASCII_WORD_END.search(a) and b[:1].isascii() and b[:1].isalnum():
+        return a + " " + b
+    return a + b
+
+
+def _can_merge(prev: dict, cur: dict, col_of, ncol: int) -> bool:
+    """同一栏内、行距接近行高、且不是句末 + 大写起头的段落边界，则视为同一段的折行"""
+    if prev.get("_kind") != "paragraph" or cur.get("_kind") != "paragraph":
+        return False
+    pb, cb = prev.get("bbox"), cur.get("bbox")
+    if not pb or not cb or len(pb) != 4 or len(cb) != 4:
+        return False
+    if ncol > 1 and col_of(prev) != col_of(cur):
+        return False
+    line_h = (pb[3] - pb[1]) or prev.get("font_size") or 9.0
+    gap = cb[1] - pb[3]
+    if gap < -0.6 * line_h or gap > max(line_h * 1.25, 3.0):
+        return False
+    # 字号不同 → 不同层级（标题 vs 作者 vs 正文），不合并
+    pf, cf = prev.get("font_size"), cur.get("font_size")
+    if pf and cf and abs(float(pf) - float(cf)) > 0.6:
+        return False
+    prev_text, cur_text = prev["text"].rstrip(), cur["text"].lstrip()
+    # 句末标点 + 下一行大写/CJK 起头 → 判定为段间，不合并
+    if SENT_END.search(prev_text) and len(prev_text) >= 25:
+        head = cur_text[:1]
+        if head and (head.isupper() or ord(head) > 127):
+            return False
+    return True
+
+
+def modal_font_size(body: list[dict]) -> float:
+    """页面正文字号的众数：标题判定以此为基准，避免硬编码 13pt 在 8–10pt 排版上失效"""
+    sizes = []
+    for blk in body:
+        fs = blk.get("font_size")
+        if fs:
+            try:
+                sizes.append(round(float(fs), 1))
+            except (TypeError, ValueError):
+                continue
+    if not sizes:
+        return 0.0
+    return Counter(sizes).most_common(1)[0][0]
+
+
+def merge_paragraph_lines(body: list[dict], ncol: int, col_of, page_no: int, log: RunLog, body_size=None) -> list[dict]:
+    """把同一段落的 PDF 折行合并成一个块：块数从「视觉行数」回到「真实段落数」"""
+    for idx, blk in enumerate(body, 1):
+        blk["_kind"] = block_type(blk["text"], page_no, idx, blk.get("font_size"), False, body_size)
+    merged: list[dict] = []
+    joined = 0
+    for blk in body:
+        prev = merged[-1] if merged else None
+        if prev is not None and _can_merge(prev, blk, col_of, ncol):
+            prev["text"] = _join_lines(prev["text"], blk["text"])
+            pb, cb = prev["bbox"], blk["bbox"]
+            prev["bbox"] = [min(pb[0], cb[0]), min(pb[1], cb[1]), max(pb[2], cb[2]), max(pb[3], cb[3])]
+            prev["merged_lines"] = prev.get("merged_lines", 1) + 1
+            prev["_kind"] = "paragraph"
+            joined += 1
+            continue
+        merged.append(dict(blk))
+    log.add("merge_paragraph_lines", f"p{page_no}: visual_lines={len(body)} paragraphs={len(merged)} joined={joined}")
+    return merged
+
+
+REF_HEAD = re.compile(r"^(?:references?|bibliography|参考文献|引用文献)\s*$", re.I)
+REF_START = re.compile(r"^\s*(\[\d{1,3}\]|\d{1,3}[.)]\s)")
+
+
+def coalesce_references(out: list[dict], log: RunLog) -> list[dict]:
+    """参考文献区重排：以 [n] / n. 为界重新切块，续行并入所属条目，避免多条粘连或一条被拆散"""
+    start = next((i + 1 for i, b in enumerate(out) if b["type"] == "heading" and REF_HEAD.match(b["text"].strip())), None)
+    if start is None or start >= len(out):
+        return out
+    end = next((j for j in range(start, len(out)) if out[j]["type"] == "heading"), len(out))
+    region = out[start:end]
+    if not region:
+        return out
+    text = " ".join(b["text"].strip() for b in region)
+    parts = [p.strip() for p in re.split(r"(?=\[\d{1,3}\])", text) if p.strip()]
+    if len(parts) <= 1:
+        parts = [p.strip() for p in re.split(r"(?=\b\d{1,3}[.)]\s)", text) if p.strip()]
+    if len(parts) <= 1:
+        return out
+    rebuilt: list[dict] = []
+    for k, part in enumerate(parts):
+        src = region[min(k, len(region) - 1)]
+        item = dict(src)
+        item.update(
+            {
+                "type": "reference",
+                "text": part,
+                "anchor": f"{src['anchor'].split(':')[0]}:ref{k + 1}",
+                "confidence": "high",
+                "source_type": src.get("source_type", "text_layer"),
+            }
+        )
+        rebuilt.append(item)
+    log.add("coalesce_references", f"region_blocks={len(region)} references={len(rebuilt)}")
+    return out[:start] + rebuilt + out[end:]
 
 
 def build_blocks(pages: list[dict], log: RunLog) -> list[dict]:
@@ -351,8 +608,8 @@ def build_blocks(pages: list[dict], log: RunLog) -> list[dict]:
         def col_of(blk: dict) -> int:
             if not blk.get("bbox") or len(col_bboxes) < 2:
                 return 0
-            x = (blk["bbox"][0] + blk["bbox"][2]) / 2.0
-            return 0 if x < col_bboxes[0][1] else 1
+            # 按左边缘判归属：跨栏标题左边缘属于起始栏，不会被算进右栏
+            return 0 if blk["bbox"][0] < col_bboxes[0][1] else 1
 
         def sort_key(blk: dict):
             bbox = blk.get("bbox")
@@ -363,9 +620,13 @@ def build_blocks(pages: list[dict], log: RunLog) -> list[dict]:
             )
 
         body.sort(key=sort_key)
+        body_size = modal_font_size(body)
+        body = merge_paragraph_lines(body, ncol, col_of, page["number"], log, body_size)
         for idx, blk in enumerate(body, 1):
             text = blk["text"]
-            kind = block_type(text, page["number"], idx, blk.get("font_size"), in_refs)
+            kind = block_type(text, page["number"], idx, blk.get("font_size"), in_refs, body_size)
+            if kind == "heading":
+                text = re.sub(r"^#{1,6}\s*", "", text).strip() or text
             if kind == "heading" and re.search(r"references?|参考文献", text, re.I):
                 in_refs = True
             col = col_of(blk) + 1 if ncol > 1 else None
@@ -384,6 +645,9 @@ def build_blocks(pages: list[dict], log: RunLog) -> list[dict]:
                     "bbox": blk.get("bbox"),
                 }
             )
+    out = coalesce_references(out, log)
+    for i, blk in enumerate(out, 1):
+        blk["order"] = i
     log.add("order_blocks", f"ordered_blocks={len(out)}")
     return out
 
@@ -411,6 +675,25 @@ def build_sections(blocks: list[dict]) -> list[dict]:
     return sections
 
 
+def looks_like_table_header(blk: dict, first_row: dict) -> bool:
+    """表头行常因只有一处对齐空白而被误判为正文：紧贴表格首行、同页同栏、短、多列、无句号"""
+    if blk.get("type") not in ("paragraph", "footnote"):
+        return False
+    if blk.get("page") != first_row.get("page"):
+        return False
+    if blk.get("column") != first_row.get("column"):
+        return False
+    text = blk.get("text", "").strip()
+    if not text or len(text) > 140:
+        return False
+    if re.search(r"[.。;；]$", text):
+        return False
+    parts = [p for p in re.split(r"\s{2,}|\t+|\s*\|\s*", text) if p.strip()]
+    if 2 <= len(parts) <= 10:
+        return True
+    return False
+
+
 def build_tables(blocks: list[dict], log: RunLog) -> list[dict]:
     tables: list[dict] = []
     i = 0
@@ -418,14 +701,26 @@ def build_tables(blocks: list[dict], log: RunLog) -> list[dict]:
         if blocks[i]["type"] != "table":
             i += 1
             continue
+        group_start = i
         group = []
         while i < len(blocks) and blocks[i]["type"] == "table" and (not group or blocks[i]["page"] == group[-1]["page"]):
             group.append(blocks[i])
             i += 1
+        header_rows = 0
+        cand = blocks[group_start - 1] if group_start > 0 else None
+        if cand is not None and looks_like_table_header(cand, group[0]):
+            cand = dict(cand)
+            cand["type"] = "table"
+            cand["header_row"] = True
+            group.insert(0, cand)
+            header_rows = 1
+            blocks[group_start - 1]["type"] = "table"
+            blocks[group_start - 1]["header_row"] = True
+            log.add("recover_table_header", f"table@ {group[0]['anchor']}: header row recovered from preceding block")
         cells = []
         for r, line in enumerate(group):
             text = line["text"]
-            parts = [p.strip() for p in re.split(r"\s*\|\s*|\t+|\s{4,}", text) if p.strip()]
+            parts = [p.strip() for p in re.split(r"\s*\|\s*|\t+|\s{2,}", text) if p.strip()]
             for c, val in enumerate(parts):
                 cells.append({"row": r, "col": c, "rowspan": 1, "colspan": 1, "value": val, "anchor": line["anchor"]})
         caption = ""
@@ -445,10 +740,13 @@ def build_tables(blocks: list[dict], log: RunLog) -> list[dict]:
                 "rows": len(group),
                 "cols": max([c["col"] + 1 for c in cells] or [0]),
                 "header": [c["value"] for c in cells if c["row"] == 0],
+                "header_rows": header_rows,
+                "data_rows": len(group) - header_rows,
                 "cells": cells,
                 "continued_from": continued_from,
-                "structure_source": "text_alignment",
-                "confidence": "medium",
+                "structure_source": "text_alignment(2+ spaces)",
+                "confidence": "high" if header_rows else "medium",
+                "warnings": [] if header_rows else ["no header row detected; first data row used as header"],
             }
         )
     log.add("reconstruct_tables", f"tables={len(tables)} cells={sum(len(t['cells']) for t in tables)}")
@@ -490,14 +788,41 @@ def build_evidence(blocks: list[dict]) -> list[dict]:
     ]
 
 
-def verification_report(blocks, pages, tables, formulas, evidence, uncertainties, excluded) -> dict:
-    raw_chars = sum(len(b["text"]) for p in pages for b in p["blocks"])
+def _norm_loose(text: str) -> str:
+    return re.sub(r"[\s\W_]+", "", text.lower())
+
+
+def spotcheck_anchors(evidence: list[dict], pages: list[dict]) -> tuple[int, list[dict]]:
+    """把每条 evidence 的短引回到其 anchor 所指页面里查找：找到才算回查通过"""
+    page_text = {
+        p["number"]: _norm_loose(" ".join(b["text"] for b in p["blocks"])) for p in pages
+    }
+    ok = 0
+    failures: list[dict] = []
+    for e in evidence:
+        anchor = str(e.get("anchor") or "")
+        m = re.match(r"p(\d+)", anchor)
+        quote = _norm_loose(str(e.get("evidence") or ""))[:80]
+        if not m or not quote:
+            failures.append({"anchor": anchor, "quote": str(e.get("evidence"))[:80], "reason": "anchor 或短引为空"})
+            continue
+        if quote in page_text.get(int(m.group(1)), ""):
+            ok += 1
+        else:
+            failures.append({"anchor": anchor, "quote": str(e.get("evidence"))[:80], "reason": "短引在该页文本中查不到"})
+    return ok, failures
+
+
+def verification_report(blocks, pages, tables, formulas, evidence, uncertainties, excluded, page_nums=0) -> dict:
+    # 正文基线：剔除页眉页脚后的字符数，避免"正确剔除"被算成"漏字"
+    raw_chars = sum(len(b["text"]) for p in pages for b in p["blocks"] if b.get("kind") != "header_footer")
     out_chars = sum(len(b["text"]) for b in blocks)
     bbox_pages = sum(1 for p in pages if p.get("bbox") and p["blocks"])
+    spot_ok, spot_fail = spotcheck_anchors(evidence, pages)
     return {
         "text_completeness": {
             "result": "pass" if raw_chars and out_chars >= raw_chars * 0.98 else "partial",
-            "evidence": f"extracted_chars={out_chars}; raw_layer_chars={raw_chars}; excluded_edge_blocks={excluded}",
+            "evidence": f"body_chars_in={raw_chars}; body_chars_out={out_chars}; excluded_edge_blocks={excluded}",
         },
         "reading_order_correct": {
             "result": "pass" if bbox_pages == len(pages) and pages else "na",
@@ -505,7 +830,7 @@ def verification_report(blocks, pages, tables, formulas, evidence, uncertainties
         },
         "header_footer_excluded": {
             "result": "pass" if excluded else "na",
-            "evidence": f"excluded_repeated_edge_blocks={excluded}",
+            "evidence": f"excluded_edge_blocks={excluded} (running_heads={excluded - page_nums}, page_numbers={page_nums})",
         },
         "table_structure": {
             "result": "pass" if tables else "na",
@@ -516,8 +841,12 @@ def verification_report(blocks, pages, tables, formulas, evidence, uncertainties
             "evidence": f"preserved_formula_lines={len(formulas)}; uncertain_symbols_recorded_per_item",
         },
         "anchor_spotcheck": {
-            "result": "pass" if evidence else "partial",
-            "evidence": f"anchored_entries={len(evidence)}; anchor_pattern=p<page>:<block> or p<page>:c<col>:<block>",
+            "result": "pass" if evidence and not spot_fail else ("partial" if evidence else "na"),
+            "evidence": (
+                f"quotes_located={spot_ok}/{len(evidence)}; failures={len(spot_fail)}; "
+                f"method=quote->anchor-page substring match"
+                + (f"; first_failure={spot_fail[0]['anchor']} {spot_fail[0]['reason']}" if spot_fail else "")
+            ),
         },
         "no_new_facts": {"result": "pass", "evidence": "new_facts_added=0; all text copied from supplied materials"},
         "uncertainty_disclosure": {
@@ -669,8 +998,19 @@ def main() -> int:
             uncertainties.append({"item": "no text layer", "reason": f"{meta['path']} has no extractable text; OCR tool availability={tools.get('tesseract')}", "anchor": "N/A", "question_for_author": "provide OCR text or a searchable PDF"})
         if meta.get("page_count", 0) > MAX_ANALYZED_PAGES:
             uncertainties.append({"item": "page cap", "reason": f"analyzed first {MAX_ANALYZED_PAGES} pages only", "anchor": "N/A", "question_for_author": None})
+        if meta.get("kind") == "pdf" and meta.get("text_layer") and not meta.get("bbox"):
+            uncertainties.append(
+                {
+                    "item": "no coordinates",
+                    "reason": "该 PDF 只能取到纯文本（无 bbox），无法判定栏序、剔除页眉页脚、还原表格坐标；已按源顺序输出并在 verification 标 na",
+                    "anchor": "N/A",
+                    "question_for_author": None,
+                }
+            )
+    for pg in pages:
+        log.add("page_loaded", f"p{pg['number']} size={pg.get('width', 0):.0f}x{pg.get('height', 0):.0f} blocks={len(pg['blocks'])}")
 
-    excluded, edge_patterns = mark_edge_repeats(pages, log)
+    excluded, edge_patterns, page_nums = mark_edge_repeats(pages, log)
     reading_order = []
     for pg in pages:
         ncol, cols = detect_columns(pg, log)
@@ -687,10 +1027,26 @@ def main() -> int:
         )
 
     blocks = build_blocks(pages, log)
+    for pg in pages:
+        page_blocks = [b for b in blocks if b["page"] == pg["number"]]
+        if page_blocks:
+            log.add(
+                "order_page",
+                f"p{pg['number']}: anchors {page_blocks[0]['anchor']}..{page_blocks[-1]['anchor']} "
+                f"types={dict(Counter(b['type'] for b in page_blocks))}",
+            )
     sections = build_sections(blocks)
+    for sec in sections:
+        log.add("section_detected", f"L{sec['level']} {sec['heading'][:48]!r} anchor={sec['anchor']}")
     tables = build_tables(blocks, log)
+    for t in tables:
+        log.add("table_cells", f"{t['anchor']}: {t['rows']}x{t['cols']} cells={len(t['cells'])} header_rows={t.get('header_rows')}")
     formulas = build_formulas(blocks)
+    for f in formulas:
+        log.add("formula_captured", f"{f['anchor']}: {(f.get('number') or 'no-number')} uncertain={len(f.get('uncertain_symbols') or [])}")
     evidence = build_evidence(blocks)
+    spot_ok, spot_fail = spotcheck_anchors(evidence, pages)
+    log.add("build_evidence", f"evidence_entries={len(evidence)} anchor_spotcheck={spot_ok}/{len(evidence)} failures={len(spot_fail)}")
 
     parsed_lines = ["# Parsed text in restored reading order", ""]
     structure_lines = ["# Structure map", "", "| anchor | page | column | type | bbox | text |", "|---|---|---|---|---|---|"]
@@ -708,8 +1064,20 @@ def main() -> int:
     (out / "parsed_text.md").write_text("\n".join(parsed_lines) + "\n", encoding="utf-8")
     (out / "structure_map.md").write_text("\n".join(structure_lines) + "\n", encoding="utf-8")
     (out / "evidence_map.md").write_text("\n".join(evidence_lines) + "\n", encoding="utf-8")
+    for name in ("parsed_text.md", "structure_map.md", "evidence_map.md"):
+        log.add("write_file", f"{name}: {(out / name).stat().st_size} bytes")
 
-    verification = verification_report(blocks, pages, tables, formulas, evidence, uncertainties, excluded)
+    verification = verification_report(blocks, pages, tables, formulas, evidence, uncertainties, excluded, page_nums)
+    # 锚点回查失败的条目必须如实披露，不静默通过
+    for fail in spotcheck_anchors(evidence, pages)[1]:
+        uncertainties.append(
+            {
+                "item": "anchor quote mismatch",
+                "reason": f"短引在该锚点页查不到（{fail['reason']}）：{fail['quote']}",
+                "anchor": fail["anchor"],
+                "question_for_author": None,
+            }
+        )
     title_blocks = [b for b in blocks if b["type"] == "title"]
     abstract_blocks = [b for b in blocks if re.search(r"abstract|摘要", b["text"], re.I)]
     main_result = {
@@ -748,7 +1116,7 @@ def main() -> int:
             ],
             "change_log": skeleton["change_log"]
             + [
-                {"issue": "repeated edge text", "fix": f"marked {excluded} header/footer blocks ({edge_patterns} patterns)", "location": "structure_map.md", "verified": "count in verification.header_footer_excluded"},
+                {"issue": "repeated edge text / page numbers", "fix": f"marked {excluded} header/footer blocks (running_heads={excluded - page_nums}, page_numbers={page_nums}, {edge_patterns} repeated patterns)", "location": "structure_map.md", "verified": "count in verification.header_footer_excluded"},
                 {"issue": "multi-column reading order", "fix": "sorted by column, y then x where coordinates exist", "location": "reading_order", "verified": "count in verification.reading_order_correct"},
             ],
         }
@@ -759,6 +1127,8 @@ def main() -> int:
         for key, value in contract.items():
             if key not in result:
                 result[key] = value
+        log.add("contract_fill", f"contract_fields={len(contract)} keys={sorted(contract)[:12]}")
+    log.add("case_id_backfill", f"case_id={result.get('case_id')}")
     atomic_write_json(out / "result.json", result)
     log.add("write_result", f"status={result['status']} blocks={len(blocks)} tables={len(tables)} sections={len(sections)}")
 
