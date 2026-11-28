@@ -26,6 +26,15 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+
+def _as_outdir(p):
+    """--out 兼容层：传的是文件名时取其父目录，避免把文件路径当目录用而崩溃。"""
+    path = Path(p)
+    if path.suffix.lower() in (".json", ".md", ".txt", ".yaml", ".csv"):
+        path = path.parent if str(path.parent) not in ("", ".") else Path(".")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 SCRIPT_VERSION = "p08-pdf-parser-v3.1"
 TEXT_EXTS = {".pdf", ".txt", ".md", ".markdown", ".htm", ".html"}
 MAX_ANALYZED_PAGES = 60
@@ -947,8 +956,7 @@ def main() -> int:
     ap.add_argument("--case", default="/input/case.json", help="path to case.json")
     ap.add_argument("--out", default="/app/output", help="output directory")
     args = ap.parse_args()
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = _as_outdir(args.out)
     log = RunLog()
     log.add("start", f"script={SCRIPT_VERSION} case={args.case} out={args.out}")
 
