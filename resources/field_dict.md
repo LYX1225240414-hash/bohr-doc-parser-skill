@@ -28,6 +28,9 @@
 `p<页>:<段>` / `p<页>:<栏>:<段>` / `p<页>:tab<号>` / `p<页>:fig<号>` / `p<页>:eq<号>` / `p<页>:footnote<号>` / `p<页>:ref<号>`。
 锚点必须指向真实 PDF 页面上的真实位置；无法定位的写入 uncertainties，不填伪造锚点。
 
+## 运行时 ARM v1.1 产物字段
+详见 `arm_contract.md`。`arm_manifest.json` 至少含 `arm_version`、`entrypoint`、`environment`、`execution.artifacts`、`expected_outputs`、`characterization`、`trace`；`characterization.json` 含真实 `tools` 版本与文档页数/文字层/bbox 能力；`trace/trace.jsonl` 每行含 `step_type`/`timestamp`/`action`/`detail`。
+
 ## verification 计数项
 - `text_completeness`：逐页提取块数 / 可见块数，漏行数单列
 - `reading_order_correct`：锚点抽查通过页数 / 抽查页数
