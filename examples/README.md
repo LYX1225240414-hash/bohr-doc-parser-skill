@@ -22,10 +22,11 @@
 ## 调用步骤
 
 1. 在 Agent 中加载本 Skill（安装后路径 `/skills/weekly-skill`）。
-2. 读取真实 `/input/case.json` 与 `/input/task.md`，按 SKILL.md 第 0 步先把骨架写到 `/app/output/result.json`。
-3. 按 `resources/parsing_playbook.md` 探测工具、逐页抽取坐标、判栏序、还原表格与公式；中间文件写 `/app/work`。
-4. 按 `resources/checklist.md` 做带计数自检，回修后增量写回 `/app/output/result.json`，并写 `parsed_text.md`、`structure_map.md`、`evidence_map.md`、`parse_log.txt`。
-5. 最终答复只给简要说明，详细证据留在 `/app/output`。
+2. 读取真实 `/input/case.json` 与 `/input/task.md`，确认材料路径与输出合同。
+3. **先运行内置解析脚本**：`python3 /skills/weekly-skill/resources/pdf_parser.py --case /input/case.json --out /app/output`。它先写骨架再写完整结果，并生成 ARM v1.1 七个产物与真实运行日志。
+4. 按 `resources/parsing_playbook.md` 打开真实材料抽查栏序、页眉页脚、表格、公式与锚点短引；发现错误直接回修 `/app/output/result.json` 及相关产物，并记入 `change_log`。
+5. 按 `resources/checklist.md` 与 `resources/arm_contract.md` 做带计数自检，确认 `parsed_text.md`、`structure_map.md`、`evidence_map.md`、`parse_log.txt` 与 ARM 产物齐全。
+6. 最终答复只给简要说明，详细证据留在 `/app/output`。
 
 ## 输出说明
 
